@@ -3,6 +3,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import jwt, { type Secret, type SignOptions } from "jsonwebtoken";
 import OpenAI from "openai";
 import { z } from "zod";
+import { deployStudentWorkspace, RenderDeploymentError } from "@/lib/renderDeployer";
 
 export const runtime = "nodejs";
 
@@ -49,9 +50,17 @@ type IngestSuccessResponse = {
   success: true;
   id: string;
   token: string;
+  dashboard_path: string;
   educational_gap_id: string;
   missing_concepts_count: number;
   verified_resources_count: number;
+  render_workspace?: {
+    serviceId: string;
+    serviceName: string;
+    serviceUrl: string | null;
+    deployId: string | null;
+  } | null;
+  render_warning?: string;
 };
 
 type IngestErrorResponse = {
@@ -125,13 +134,9 @@ const educationalAuditJsonSchema = {
         properties: {
           title: {
             type: "string",
-            minLength: 1,
-            maxLength: 160,
           },
           description: {
             type: "string",
-            minLength: 1,
-            maxLength: 1500,
           },
           severity: {
             type: "string",
@@ -158,18 +163,12 @@ const educationalAuditJsonSchema = {
           },
           citation: {
             type: "string",
-            minLength: 1,
-            maxLength: 1000,
           },
           source_domain: {
             type: "string",
-            minLength: 1,
-            maxLength: 120,
           },
           supports: {
             type: "string",
-            minLength: 1,
-            maxLength: 1000,
           },
         },
         required: ["title", "url", "citation", "source_domain", "supports"],
@@ -659,13 +658,59 @@ async function saveEducationalAudit(
     .from("educational_gaps")
     .insert(gapPayload)
     .select("id, note_id")
+    .upsert(gapPayload, {
+      onConflict: "note_id",
+    })
+    .select("id, note_id")
     .single<EducationalGapRow>();
 
   if (error || !data) {
-    throw new Error(`Failed to insert educational_gaps row: ${error?.message ?? "No row returned"}`);
+    throw new Error(`Failed to upsert educational_gaps row: ${error?.message ?? "No row returned"}`);
   }
 
   return data;
+}
+
+function shouldDeployRenderWorkspace(): boolean {
+  return process.env.RENDER_AUTODEPLOY_WORKSPACES === "true";
+}
+
+async function maybeDeployRenderWorkspace(note: BookAndNoteRow): Promise<{
+  renderWorkspace: IngestSuccessResponse["render_workspace"];
+  renderWarning?: string;
+}> {
+  if (!shouldDeployRenderWorkspace()) {
+    return {
+      renderWorkspace: null,
+    };
+  }
+
+  try {
+    const deployment = await deployStudentWorkspace(note.fingerprint_hash, note.id);
+
+    return {
+      renderWorkspace: {
+        serviceId: deployment.serviceId,
+        serviceName: deployment.serviceName,
+        serviceUrl: deployment.serviceUrl,
+        deployId: deployment.deployId,
+      },
+    };
+  } catch (error) {
+    const message =
+      error instanceof RenderDeploymentError
+        ? `${error.code}: ${error.message}`
+        : error instanceof Error
+          ? error.message
+          : "Render workspace deployment failed";
+
+    console.error("PaperLoom Render deployment warning:", error);
+
+    return {
+      renderWorkspace: null,
+      renderWarning: message,
+    };
+  }
 }
 
 function createFingerprintJwt(payload: z.infer<typeof ingestPayloadSchema>): string {
@@ -720,6 +765,7 @@ export async function POST(request: NextRequest) {
     const rawTextForAudit = existingNote?.raw_text && existingNote.raw_text.trim().length > 0 ? existingNote.raw_text : payload.raw_text;
     const educationalAudit = await runEducationalValidationPipeline(rawTextForAudit);
     const educationalGap = await saveEducationalAudit(supabase, note.id, educationalAudit);
+    const { renderWorkspace, renderWarning } = await maybeDeployRenderWorkspace(note);
     const token = createFingerprintJwt(payload);
 
     return jsonResponse(
@@ -727,9 +773,12 @@ export async function POST(request: NextRequest) {
         success: true,
         id: note.id,
         token,
+        dashboard_path: `/dashboard/${payload.fingerprint_hash}`,
         educational_gap_id: educationalGap.id,
         missing_concepts_count: educationalAudit.missing_concepts.length,
         verified_resources_count: educationalAudit.verified_resources.length,
+        render_workspace: renderWorkspace,
+        render_warning: renderWarning,
       },
       200,
     );
