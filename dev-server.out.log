@@ -1,10 +1,26 @@
 
 > paperloom@0.1.0 dev
-> next dev --hostname 127.0.0.1 --port 3001
+> next dev --hostname 127.0.0.1 --port 3000
 
    ▲ Next.js 15.5.22
-   - Local:        http://127.0.0.1:3001
-   - Network:      http://127.0.0.1:3001
+   - Local:        http://127.0.0.1:3000
+   - Network:      http://127.0.0.1:3000
+   - Environments: .env
 
  ✓ Starting...
- ✓ Ready in 22.8s
+ ✓ Ready in 13s
+ ○ Compiling / ...
+ ✓ Compiled / in 28.7s (602 modules)
+ GET / 200 in 30927ms
+ ✓ Compiled in 2.2s (238 modules)
+   Reload env: .env
+ ✓ Compiled in 1751ms (588 modules)
+ ✓ Compiled in 572ms (238 modules)
+ GET / 200 in 822ms
+ ○ Compiling /api/ingest ...
+ ✓ Compiled /api/ingest in 6.1s (740 modules)
+ POST /api/ingest 500 in 15946ms
+ GET / 200 in 559ms
+ POST /api/ingest 500 in 7273ms
+ ✓ Compiled in 10.1s (603 modules)
+ ✓ Compiled in 6.5s (239 modules)

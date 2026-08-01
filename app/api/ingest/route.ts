@@ -122,14 +122,12 @@ const educationalAuditSchema = z.object({
 
 const educationalAuditJsonSchema = {
   type: "object",
-  additionalProperties: false,
   properties: {
     missing_concepts: {
       type: "array",
       maxItems: 12,
       items: {
         type: "object",
-        additionalProperties: false,
         properties: {
           title: {
             type: "string",
@@ -150,7 +148,6 @@ const educationalAuditJsonSchema = {
       maxItems: 12,
       items: {
         type: "object",
-        additionalProperties: false,
         properties: {
           title: {
             type: "string",
@@ -287,7 +284,10 @@ function getOptionalEnv(name: string, fallback: string): string {
 }
 
 function createSupabaseServiceClient(): SupabaseClient {
-  const supabaseUrl = getRequiredEnv("SUPABASE_URL");
+  const supabaseUrl = getOptionalEnv(
+    "SUPABASE_URL",
+    getRequiredEnv("NEXT_PUBLIC_SUPABASE_URL"),
+  );
   const supabaseServiceRoleKey = getRequiredEnv("SUPABASE_SERVICE_ROLE_KEY");
 
   return createClient(supabaseUrl, supabaseServiceRoleKey, {
@@ -542,6 +542,7 @@ async function auditRawTextWithGemini(
         ],
         generationConfig: {
           responseMimeType: "application/json",
+          responseSchema: educationalAuditJsonSchema,
         },
       }),
     },
@@ -568,6 +569,10 @@ async function auditRawTextWithGemini(
     parsedJson = JSON.parse(content);
   } catch {
     throw new Error("Gemini curriculum audit response was not valid JSON");
+  }
+
+  if (Array.isArray(parsedJson) && parsedJson.length === 1) {
+    parsedJson = parsedJson[0];
   }
 
   const parsed = educationalAuditSchema.safeParse(parsedJson);
