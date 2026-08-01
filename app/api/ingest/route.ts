@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import jwt, { type Secret, type SignOptions } from "jsonwebtoken";
-import OpenAI from "openai";
 import { z } from "zod";
 import { deployStudentWorkspace, RenderDeploymentError } from "@/lib/renderDeployer";
 
@@ -299,10 +298,12 @@ function createSupabaseServiceClient(): SupabaseClient {
   });
 }
 
-function createOpenAIClient(): OpenAI {
-  return new OpenAI({
-    apiKey: getRequiredEnv("OPENAI_API_KEY"),
-  });
+function getGeminiApiKey(): string {
+  return getRequiredEnv("GEMINI_API_KEY");
+}
+
+function getGeminiModel(): string {
+  return getOptionalEnv("GEMINI_MODEL", "gemini-2.5-flash");
 }
 
 function normalizeWhitespace(value: string): string {
@@ -508,51 +509,71 @@ function coerceAuditResourcesToTavilyUrls(
   };
 }
 
-async function auditRawTextWithOpenAI(
+async function auditRawTextWithGemini(
   rawText: string,
   groundingResources: GroundingResource[],
 ): Promise<EducationalAudit> {
-  const openai = createOpenAIClient();
-  const completion = await openai.chat.completions.create({
-    model: getOptionalEnv("OPENAI_MODEL", "gpt-5.6-terra"),
-    messages: [
-      {
-        role: "system",
-        content: CURRICULUM_AUDITOR_SYSTEM_PROMPT,
+  const apiKey = getGeminiApiKey();
+  const model = getGeminiModel();
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
       },
-      {
-        role: "user",
-        content: buildAuditUserPrompt(rawText, groundingResources),
-      },
-    ],
-    response_format: {
-      type: "json_schema",
-      json_schema: {
-        name: "paperloom_educational_audit",
-        strict: true,
-        schema: educationalAuditJsonSchema,
-      },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [
+            {
+              text: CURRICULUM_AUDITOR_SYSTEM_PROMPT,
+            },
+          ],
+        },
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: buildAuditUserPrompt(rawText, groundingResources),
+              },
+            ],
+          },
+        ],
+        generationConfig: {
+          responseMimeType: "application/json",
+        },
+      }),
     },
-  });
+  );
 
-  const content = completion.choices[0]?.message?.content;
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    throw new Error(`Gemini curriculum audit failed with ${response.status}: ${errorText}`);
+  }
+
+  const json = await response.json();
+  const content = json?.candidates?.[0]?.content?.parts
+    ?.map((part: { text?: string }) => part.text ?? "")
+    .join("")
+    .trim();
 
   if (!content) {
-    throw new Error("OpenAI returned an empty curriculum audit response");
+    throw new Error("Gemini returned an empty curriculum audit response");
   }
 
-  let json: unknown;
+  let parsedJson: unknown;
 
   try {
-    json = JSON.parse(content);
+    parsedJson = JSON.parse(content);
   } catch {
-    throw new Error("OpenAI curriculum audit response was not valid JSON");
+    throw new Error("Gemini curriculum audit response was not valid JSON");
   }
 
-  const parsed = educationalAuditSchema.safeParse(json);
+  const parsed = educationalAuditSchema.safeParse(parsedJson);
 
   if (!parsed.success) {
-    throw new Error(`OpenAI curriculum audit failed schema validation: ${parsed.error.message}`);
+    throw new Error(`Gemini curriculum audit failed schema validation: ${parsed.error.message}`);
   }
 
   return coerceAuditResourcesToTavilyUrls(parsed.data, groundingResources);
@@ -560,7 +581,7 @@ async function auditRawTextWithOpenAI(
 
 async function runEducationalValidationPipeline(rawText: string): Promise<EducationalAudit> {
   const groundingResources = await gatherEducationalGrounding(rawText);
-  return auditRawTextWithOpenAI(rawText, groundingResources);
+  return auditRawTextWithGemini(rawText, groundingResources);
 }
 
 async function findExistingNote(
