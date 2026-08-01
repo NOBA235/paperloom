@@ -608,30 +608,11 @@ async function insertNote(
   throw new Error(`Failed to insert books_and_notes row: ${error?.message ?? "Unknown Supabase error"}`);
 }
 
-async function findExistingEducationalGapId(
-  supabase: SupabaseClient,
-  noteId: string,
-): Promise<string | null> {
-  const { data, error } = await supabase
-    .from("educational_gaps")
-    .select("id")
-    .eq("note_id", noteId)
-    .order("updated_at", { ascending: false })
-    .limit(1);
-
-  if (error) {
-    throw new Error(`Failed to query educational_gaps: ${error.message}`);
-  }
-
-  return Array.isArray(data) && data.length > 0 ? String(data[0].id) : null;
-}
-
 async function saveEducationalAudit(
   supabase: SupabaseClient,
   noteId: string,
   audit: EducationalAudit,
 ): Promise<EducationalGapRow> {
-  const existingGapId = await findExistingEducationalGapId(supabase, noteId);
   const gapPayload = {
     note_id: noteId,
     missing_concepts: audit.missing_concepts,
@@ -639,25 +620,8 @@ async function saveEducationalAudit(
     updated_at: new Date().toISOString(),
   };
 
-  if (existingGapId) {
-    const { data, error } = await supabase
-      .from("educational_gaps")
-      .update(gapPayload)
-      .eq("id", existingGapId)
-      .select("id, note_id")
-      .single<EducationalGapRow>();
-
-    if (error || !data) {
-      throw new Error(`Failed to update educational_gaps row: ${error?.message ?? "No row returned"}`);
-    }
-
-    return data;
-  }
-
   const { data, error } = await supabase
     .from("educational_gaps")
-    .insert(gapPayload)
-    .select("id, note_id")
     .upsert(gapPayload, {
       onConflict: "note_id",
     })

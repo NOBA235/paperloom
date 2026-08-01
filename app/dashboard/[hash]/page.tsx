@@ -696,8 +696,8 @@ export default function DashboardPage() {
     };
   }, [hash]);
 
-  const concepts = workspace?.gaps?.missing_concepts ?? [];
-  const resources = workspace?.gaps?.verified_resources ?? [];
+  const concepts = useMemo(() => workspace?.gaps?.missing_concepts ?? [], [workspace?.gaps?.missing_concepts]);
+  const resources = useMemo(() => workspace?.gaps?.verified_resources ?? [], [workspace?.gaps?.verified_resources]);
   const quizQuestions = useMemo(() => generateQuizQuestions(concepts, resources), [concepts, resources]);
 
   if (state === "idle" || state === "loading") {
