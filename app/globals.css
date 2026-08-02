@@ -3,9 +3,13 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: dark;
-  --paperloom-ink: #020617;
-  --paperloom-paper: #f8fafc;
+  color-scheme: light;
+  --paperloom-bg: #f7f7f5;
+  --paperloom-surface: #ffffff;
+  --paperloom-ink: #1f1f1d;
+  --paperloom-muted: #6f6f6b;
+  --paperloom-border: #e8e8e4;
+  --paperloom-accent: #4b4a8f;
 }
 
 * {
@@ -20,8 +24,8 @@ html {
 body {
   min-height: 100%;
   margin: 0;
-  background: var(--paperloom-ink);
-  color: var(--paperloom-paper);
+  background: var(--paperloom-bg);
+  color: var(--paperloom-ink);
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   text-rendering: geometricPrecision;
 }
@@ -32,14 +36,19 @@ textarea {
   font: inherit;
 }
 
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
 ::selection {
-  background: rgba(34, 211, 238, 0.35);
-  color: #ffffff;
+  background: rgba(75, 74, 143, 0.18);
+  color: var(--paperloom-ink);
 }
 
 .paperloom-scrollbar {
   scrollbar-width: thin;
-  scrollbar-color: rgba(14, 165, 233, 0.45) transparent;
+  scrollbar-color: #d3d3cd transparent;
 }
 
 .paperloom-scrollbar::-webkit-scrollbar {
@@ -48,6 +57,12 @@ textarea {
 }
 
 .paperloom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(14, 165, 233, 0.45);
+  background: #d3d3cd;
+  border: 3px solid transparent;
   border-radius: 999px;
+  background-clip: content-box;
+}
+
+.paperloom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
 }
