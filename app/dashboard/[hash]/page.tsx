@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useReducer, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
@@ -69,6 +69,17 @@ type QuizQuestion = {
 
 type LoadingState = "idle" | "loading" | "ready" | "missing-token" | "not-found" | "error";
 type WorkspaceTab = "overview" | "page" | "gaps" | "sources" | "practice";
+type UiMorphState = "standard" | "bionic" | "horizon";
+
+type UiMorphAction = {
+  type: "set";
+  state: UiMorphState;
+};
+
+type HorizonFocusNode = MissingConcept & {
+  index: number;
+  resource?: VerifiedResource;
+};
 
 const TOKEN_STORAGE_KEYS = [
   "paperloom.jwt",
@@ -112,8 +123,23 @@ const TAB_DEFINITIONS: Array<{ id: WorkspaceTab; label: string; icon: LucideIcon
   { id: "practice", label: "Practice", icon: Check },
 ];
 
+const UI_MORPH_OPTIONS: Array<{ id: UiMorphState; label: string; icon: LucideIcon }> = [
+  { id: "standard", label: "Standard", icon: BookOpen },
+  { id: "bionic", label: "Bionic", icon: ScanLine },
+  { id: "horizon", label: "Horizon", icon: ListChecks },
+];
+
 function cn(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(" ");
+}
+
+function uiMorphReducer(state: UiMorphState, action: UiMorphAction): UiMorphState {
+  switch (action.type) {
+    case "set":
+      return action.state;
+    default:
+      return state;
+  }
 }
 
 function readCookieValue(name: string): string | null {
@@ -311,6 +337,86 @@ function buildHighlightTerms(concepts: MissingConcept[]): string[] {
   ).slice(0, 40);
 }
 
+function normalizeReadingToken(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9-]/g, "").replace(/^-+|-+$/g, "");
+}
+
+function getBionicPrefixLength(word: string): number {
+  const length = word.replace(/[^a-zA-Z0-9]/g, "").length;
+
+  if (length <= 2) {
+    return length;
+  }
+
+  if (length <= 5) {
+    return 2;
+  }
+
+  if (length <= 8) {
+    return 3;
+  }
+
+  return Math.max(3, Math.ceil(length * 0.42));
+}
+
+function BionicWord({ token, emphasized }: { token: string; emphasized: boolean }) {
+  const match = token.match(/^([^A-Za-z0-9]*)([A-Za-z0-9][A-Za-z0-9'-]*)([^A-Za-z0-9]*)$/);
+
+  if (!match) {
+    return <span>{token}</span>;
+  }
+
+  const [, before, core, after] = match;
+  const prefixLength = getBionicPrefixLength(core);
+  const prefix = core.slice(0, prefixLength);
+  const suffix = core.slice(prefixLength);
+
+  return (
+    <span className={cn("transition-colors", emphasized && "rounded-[4px] bg-[#ECECF7] px-0.5 text-[#35327D]")}>
+      {before}
+      <strong className="font-extrabold text-[#1F1F1D]">{prefix}</strong>
+      <span className="font-normal">{suffix}</span>
+      {after}
+    </span>
+  );
+}
+
+function BionicGuidedText({ text, terms }: { text: string; terms: string[] }) {
+  const normalizedTerms = terms.map(normalizeReadingToken).filter(Boolean);
+  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? [text];
+
+  return (
+    <>
+      {sentences.map((sentence, sentenceIndex) => {
+        let wordIndex = 0;
+
+        return (
+          <span key={`${sentence.slice(0, 18)}-${sentenceIndex}`}>
+            {sentence.split(/(\s+)/).map((token, tokenIndex) => {
+              if (/^\s+$/.test(token)) {
+                return <span key={`${sentenceIndex}-space-${tokenIndex}`}>{token}</span>;
+              }
+
+              const normalizedToken = normalizeReadingToken(token);
+              const isKeyword = normalizedTerms.some((term) => normalizedToken === term || normalizedToken.includes(term) || term.includes(normalizedToken));
+              const isSentenceLead = wordIndex < 3;
+              wordIndex += normalizedToken ? 1 : 0;
+
+              return (
+                <BionicWord
+                  key={`${sentenceIndex}-${token}-${tokenIndex}`}
+                  token={token}
+                  emphasized={Boolean(normalizedToken && (isKeyword || isSentenceLead))}
+                />
+              );
+            })}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
 function HighlightedText({ text, terms }: { text: string; terms: string[] }) {
   if (terms.length === 0) {
     return <>{text}</>;
@@ -336,6 +442,16 @@ function HighlightedText({ text, terms }: { text: string; terms: string[] }) {
       })}
     </>
   );
+}
+
+function buildHorizonFocusNodes(concepts: MissingConcept[], resources: VerifiedResource[]): HorizonFocusNode[] {
+  return concepts
+    .map((concept, index) => ({
+      ...concept,
+      index,
+      resource: resources[index % Math.max(resources.length, 1)],
+    }))
+    .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
 }
 
 function generateQuizQuestions(concepts: MissingConcept[], resources: VerifiedResource[]): QuizQuestion[] {
@@ -640,6 +756,60 @@ function WorkspaceTabs({ activeTab, onChange }: { activeTab: WorkspaceTab; onCha
   );
 }
 
+function CognitiveControlPanel({
+  uiMorphState,
+  onChange,
+}: {
+  uiMorphState: UiMorphState;
+  onChange: (state: UiMorphState) => void;
+}) {
+  return (
+    <div
+      className={cn(
+        "sticky z-30 mb-5 rounded-[10px] border border-[#E8E8E4] bg-white/95 px-3 py-3 shadow-[0_14px_35px_rgba(31,31,29,0.05)] backdrop-blur",
+        uiMorphState === "horizon" ? "top-4" : "top-[76px] lg:top-4",
+      )}
+    >
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] border border-[#DDDDD8] bg-[#FAFAF8] text-[#4B4A8F]">
+            <ScanLine className="h-4 w-4" strokeWidth={1.8} />
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-[#1F1F1D]">Adaptive workspace</p>
+            <p className="text-xs text-[#6F6F6B]">{UI_MORPH_OPTIONS.find((option) => option.id === uiMorphState)?.label ?? "Standard"} mode</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-1 rounded-[8px] bg-[#F2F2EF] p-1" role="radiogroup" aria-label="Workspace viewing profile">
+          {UI_MORPH_OPTIONS.map((option) => {
+            const Icon = option.icon;
+            const active = option.id === uiMorphState;
+
+            return (
+              <button
+                key={option.id}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                title={`${option.label} mode`}
+                onClick={() => onChange(option.id)}
+                className={cn(
+                  "inline-flex h-9 min-w-[44px] items-center justify-center gap-2 rounded-[7px] px-3 text-sm font-medium transition",
+                  active ? "bg-white text-[#35327D] shadow-[0_6px_18px_rgba(31,31,29,0.08)]" : "text-[#6F6F6B] hover:bg-white/70 hover:text-[#1F1F1D]",
+                )}
+              >
+                <Icon className="h-4 w-4" strokeWidth={1.8} />
+                <span className="hidden sm:inline">{option.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SeverityBadge({ severity }: { severity: Severity }) {
   return <span className={cn("inline-flex rounded-full border px-2 py-0.5 text-xs font-medium", SEVERITY_STYLES[severity])}>{SEVERITY_LABELS[severity]}</span>;
 }
@@ -763,6 +933,85 @@ function PageIdentityPanel({ note, copied, onCopyFingerprint }: { note: BookAndN
   );
 }
 
+function HorizonFocusLayout({
+  nodes,
+  activeIndex,
+  onPrevious,
+  onNext,
+}: {
+  nodes: HorizonFocusNode[];
+  activeIndex: number;
+  onPrevious: () => void;
+  onNext: () => void;
+}) {
+  const node = nodes[activeIndex] ?? null;
+  const hasMultipleNodes = nodes.length > 1;
+  const resource = node?.resource;
+
+  return (
+    <section className="mt-6 flex min-h-[calc(100vh-158px)] items-center justify-center bg-white px-2 py-8 sm:px-4">
+      <article className="w-full max-w-2xl rounded-[12px] border border-[#E8E8E4] bg-white p-5 shadow-[0_24px_70px_rgba(31,31,29,0.08)] sm:p-7">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <p className="font-mono text-xs text-[#92928E]">
+              {node ? `Node ${String(activeIndex + 1).padStart(2, "0")}` : "Node 01"}
+            </p>
+            <h1 className="mt-2 text-[26px] font-semibold leading-tight text-[#1F1F1D]">
+              {node?.title ?? "No learning gap recorded"}
+            </h1>
+          </div>
+          {node ? <SeverityBadge severity={node.severity} /> : <StatusBadge tone="success">Clear</StatusBadge>}
+        </div>
+
+        <p className="mt-5 text-base leading-8 text-[#3D3D39]">
+          {node?.description ?? "This scan does not currently include a missing concept. Keep the workspace in standard mode for full page review."}
+        </p>
+
+        {resource ? (
+          <div className="mt-6 border-t border-[#ECECE7] pt-4">
+            <p className="text-xs font-semibold text-[#1F1F1D]">Verified source</p>
+            <a
+              href={resource.url}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-1 inline-flex items-start gap-2 text-sm leading-6 text-[#4B4A8F]"
+            >
+              <span>{resource.title}</span>
+              <ExternalLink className="mt-1 h-3.5 w-3.5 shrink-0" strokeWidth={1.8} />
+            </a>
+          </div>
+        ) : null}
+
+        <div className="mt-8 flex flex-col gap-3 border-t border-[#ECECE7] pt-4 sm:flex-row sm:items-center sm:justify-between">
+          <span className="text-sm text-[#6F6F6B]">
+            {nodes.length > 0 ? `${activeIndex + 1} of ${nodes.length}` : "1 of 1"}
+          </span>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onPrevious}
+              disabled={!hasMultipleNodes}
+              aria-label="Previous focus node"
+              className="flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#DDDDD8] bg-white text-[#6F6F6B] transition hover:bg-[#FAFAF8] hover:text-[#1F1F1D] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <ChevronRight className="h-4 w-4 rotate-180" strokeWidth={1.8} />
+            </button>
+            <button
+              type="button"
+              onClick={onNext}
+              disabled={!hasMultipleNodes}
+              aria-label="Next focus node"
+              className="flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#DDDDD8] bg-white text-[#6F6F6B] transition hover:bg-[#FAFAF8] hover:text-[#1F1F1D] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <ChevronRight className="h-4 w-4" strokeWidth={1.8} />
+            </button>
+          </div>
+        </div>
+      </article>
+    </section>
+  );
+}
+
 function OverviewTab({
   note,
   concepts,
@@ -822,23 +1071,39 @@ function OverviewTab({
   );
 }
 
-function PageCanvas({ note, concepts }: { note: BookAndNote; concepts: MissingConcept[] }) {
+function PageCanvas({
+  note,
+  concepts,
+  uiMorphState,
+}: {
+  note: BookAndNote;
+  concepts: MissingConcept[];
+  uiMorphState: UiMorphState;
+}) {
   const paragraphs = useMemo(() => splitIntoParagraphs(note.raw_text), [note.raw_text]);
   const highlightTerms = useMemo(() => buildHighlightTerms(concepts), [concepts]);
   const title = inferDocumentTitle(note.raw_text);
+  const isBionic = uiMorphState === "bionic";
 
   return (
-    <div className="rounded-[12px] border border-[#E8E8E4] bg-white px-5 py-5 shadow-[0_18px_55px_rgba(31,31,29,0.08)] sm:px-8 sm:py-7">
+    <div
+      className={cn(
+        "rounded-[12px] border border-[#E8E8E4] bg-white px-5 py-5 shadow-[0_18px_55px_rgba(31,31,29,0.08)] transition-all duration-300 sm:px-8 sm:py-7",
+        isBionic && "border-[#D8D7EF] bg-[#FEFEFC]",
+      )}
+    >
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-[#ECECE7] pb-4 text-xs text-[#6F6F6B]">
         <span>Page scan</span>
         <span>/</span>
         <span>{paragraphs.length} sections</span>
         <span>/</span>
-        <span>Verified page</span>
+        <span>{isBionic ? "Bionic spatial view" : "Verified page"}</span>
       </div>
       <article className="paperloom-scrollbar mt-6 max-h-[760px] overflow-y-auto pr-1">
-        <h2 className="max-w-2xl text-[24px] font-semibold leading-tight tracking-tight text-[#1F1F1D]">{title}</h2>
-        <div className="mt-6 space-y-4 text-[15px] leading-7 text-[#33332F]">
+        <h2 className={cn("max-w-2xl text-[24px] font-semibold leading-tight text-[#1F1F1D]", isBionic ? "tracking-wide" : "tracking-tight")}>
+          {title}
+        </h2>
+        <div className={cn("mt-6 space-y-4 text-[15px] text-[#33332F]", isBionic ? "leading-loose tracking-wide" : "leading-7")}>
           {paragraphs.slice(1).map((paragraph, index) => {
             const severity = getParagraphSeverity(paragraph, concepts);
 
@@ -846,7 +1111,8 @@ function PageCanvas({ note, concepts }: { note: BookAndNote; concepts: MissingCo
               <p
                 key={`${paragraph.slice(0, 18)}-${index}`}
                 className={cn(
-                  "rounded-[8px] border-l-2 py-1 pl-3",
+                  "rounded-[8px] border-l-2 py-1 pl-3 transition-all duration-300",
+                  isBionic && "py-2 pl-4 leading-loose tracking-wide",
                   severity === "critical" && "border-l-[#C96D6D]",
                   severity === "high" && "border-l-[#C98264]",
                   severity === "medium" && "border-l-[#BCA35F]",
@@ -854,7 +1120,7 @@ function PageCanvas({ note, concepts }: { note: BookAndNote; concepts: MissingCo
                   !severity && "border-l-transparent",
                 )}
               >
-                <HighlightedText text={paragraph} terms={highlightTerms} />
+                {isBionic ? <BionicGuidedText text={paragraph} terms={highlightTerms} /> : <HighlightedText text={paragraph} terms={highlightTerms} />}
               </p>
             );
           })}
@@ -869,15 +1135,17 @@ function PageTab({
   concepts,
   copied,
   onCopyFingerprint,
+  uiMorphState,
 }: {
   note: BookAndNote;
   concepts: MissingConcept[];
   copied: boolean;
   onCopyFingerprint: () => void;
+  uiMorphState: UiMorphState;
 }) {
   return (
     <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
-      <PageCanvas note={note} concepts={concepts} />
+      <PageCanvas note={note} concepts={concepts} uiMorphState={uiMorphState} />
       <PageIdentityPanel note={note} copied={copied} onCopyFingerprint={onCopyFingerprint} />
     </div>
   );
@@ -1025,6 +1293,8 @@ export default function DashboardPage() {
   const [workspace, setWorkspace] = useState<WorkspaceData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("overview");
+  const [uiMorphState, dispatchUiMorphState] = useReducer(uiMorphReducer, "standard");
+  const [horizonIndex, setHorizonIndex] = useState(0);
   const [copied, setCopied] = useState(false);
   const [answers, setAnswers] = useState<Record<string, number>>({});
 
@@ -1080,8 +1350,19 @@ export default function DashboardPage() {
 
   const concepts = useMemo(() => workspace?.gaps?.missing_concepts ?? [], [workspace?.gaps?.missing_concepts]);
   const resources = useMemo(() => workspace?.gaps?.verified_resources ?? [], [workspace?.gaps?.verified_resources]);
+  const horizonNodes = useMemo(() => buildHorizonFocusNodes(concepts, resources), [concepts, resources]);
   const quizQuestions = useMemo(() => generateQuizQuestions(concepts, resources), [concepts, resources]);
   const title = useMemo(() => (workspace?.note ? inferDocumentTitle(workspace.note.raw_text) : "Workspace"), [workspace?.note]);
+
+  useEffect(() => {
+    setHorizonIndex((current) => {
+      if (horizonNodes.length === 0) {
+        return 0;
+      }
+
+      return Math.min(current, horizonNodes.length - 1);
+    });
+  }, [horizonNodes.length]);
 
   async function handleCopyFingerprint() {
     const fingerprint = workspace?.note?.fingerprint_hash;
@@ -1093,6 +1374,34 @@ export default function DashboardPage() {
     await navigator.clipboard.writeText(fingerprint);
     setCopied(true);
     setTimeout(() => setCopied(false), 1600);
+  }
+
+  function handleUiMorphStateChange(nextState: UiMorphState) {
+    dispatchUiMorphState({ type: "set", state: nextState });
+
+    if (nextState === "bionic") {
+      setActiveTab("page");
+    }
+  }
+
+  function handlePreviousHorizonNode() {
+    setHorizonIndex((current) => {
+      if (horizonNodes.length <= 1) {
+        return current;
+      }
+
+      return (current - 1 + horizonNodes.length) % horizonNodes.length;
+    });
+  }
+
+  function handleNextHorizonNode() {
+    setHorizonIndex((current) => {
+      if (horizonNodes.length <= 1) {
+        return current;
+      }
+
+      return (current + 1) % horizonNodes.length;
+    });
   }
 
   if (state === "idle" || state === "loading") {
@@ -1128,39 +1437,60 @@ export default function DashboardPage() {
     );
   }
 
+  const isHorizon = uiMorphState === "horizon";
+
   return (
-    <main className="min-h-screen bg-[#F7F7F5] text-[#1F1F1D]">
-      <div className="lg:grid lg:grid-cols-[236px_minmax(0,1fr)]">
-        <WorkspaceSidebar title={title} note={workspace.note} />
+    <main className={cn("min-h-screen text-[#1F1F1D]", isHorizon ? "bg-white" : "bg-[#F7F7F5]")}>
+      <div className={cn(!isHorizon && "lg:grid lg:grid-cols-[236px_minmax(0,1fr)]")}>
+        {!isHorizon ? <WorkspaceSidebar title={title} note={workspace.note} /> : null}
         <div className="min-w-0">
-          <MobileTopBar />
-          <div className="mx-auto max-w-[1220px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-            <WorkspaceHeader
-              note={workspace.note}
-              title={title}
-              gapCount={concepts.length}
-              resourceCount={resources.length}
-              copied={copied}
-              onCopyFingerprint={handleCopyFingerprint}
-            />
+          {!isHorizon ? <MobileTopBar /> : null}
+          <div className={cn("mx-auto max-w-[1220px] px-4 sm:px-6 lg:px-8", isHorizon ? "py-4 lg:py-5" : "py-6 lg:py-8")}>
+            <CognitiveControlPanel uiMorphState={uiMorphState} onChange={handleUiMorphStateChange} />
 
-            <WorkspaceTabs activeTab={activeTab} onChange={setActiveTab} />
-
-            {activeTab === "overview" ? (
-              <OverviewTab
-                note={workspace.note}
-                concepts={concepts}
-                resources={resources}
-                copied={copied}
-                onCopyFingerprint={handleCopyFingerprint}
+            {isHorizon ? (
+              <HorizonFocusLayout
+                nodes={horizonNodes}
+                activeIndex={horizonIndex}
+                onPrevious={handlePreviousHorizonNode}
+                onNext={handleNextHorizonNode}
               />
-            ) : null}
-            {activeTab === "page" ? (
-              <PageTab note={workspace.note} concepts={concepts} copied={copied} onCopyFingerprint={handleCopyFingerprint} />
-            ) : null}
-            {activeTab === "gaps" ? <LearningGapsTab concepts={concepts} resources={resources} /> : null}
-            {activeTab === "sources" ? <SourcesTab resources={resources} /> : null}
-            {activeTab === "practice" ? <PracticeTab questions={quizQuestions} answers={answers} setAnswers={setAnswers} /> : null}
+            ) : (
+              <>
+                <WorkspaceHeader
+                  note={workspace.note}
+                  title={title}
+                  gapCount={concepts.length}
+                  resourceCount={resources.length}
+                  copied={copied}
+                  onCopyFingerprint={handleCopyFingerprint}
+                />
+
+                <WorkspaceTabs activeTab={activeTab} onChange={setActiveTab} />
+
+                {activeTab === "overview" ? (
+                  <OverviewTab
+                    note={workspace.note}
+                    concepts={concepts}
+                    resources={resources}
+                    copied={copied}
+                    onCopyFingerprint={handleCopyFingerprint}
+                  />
+                ) : null}
+                {activeTab === "page" ? (
+                  <PageTab
+                    note={workspace.note}
+                    concepts={concepts}
+                    copied={copied}
+                    onCopyFingerprint={handleCopyFingerprint}
+                    uiMorphState={uiMorphState}
+                  />
+                ) : null}
+                {activeTab === "gaps" ? <LearningGapsTab concepts={concepts} resources={resources} /> : null}
+                {activeTab === "sources" ? <SourcesTab resources={resources} /> : null}
+                {activeTab === "practice" ? <PracticeTab questions={quizQuestions} answers={answers} setAnswers={setAnswers} /> : null}
+              </>
+            )}
           </div>
         </div>
       </div>
